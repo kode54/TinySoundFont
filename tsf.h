@@ -181,7 +181,7 @@ TSFDEF void tsf_note_off(tsf* f, int preset_index, int key);
 TSFDEF int  tsf_bank_note_off(tsf* f, int bank, int preset_number, int key);
 
 // Stop playing all notes (end with sustain and release)
-TSFDEF void tsf_note_off_all(tsf* f);
+TSFDEF void tsf_note_off_all(tsf* f, int quick);
 
 // Returns the number of active voices
 TSFDEF int tsf_active_voice_count(tsf* f);
@@ -1692,11 +1692,19 @@ TSFDEF int tsf_bank_note_off(tsf* f, int bank, int preset_number, int key)
 	return 1;
 }
 
-TSFDEF void tsf_note_off_all(tsf* f)
+TSFDEF void tsf_note_off_all(tsf* f, int quick)
 {
 	struct tsf_voice *v = f->voices, *vEnd = v + f->voiceNum;
-	for (; v != vEnd; v++) if (v->playingPreset != -1 && v->ampenv.segment < TSF_SEGMENT_RELEASE)
-		tsf_voice_end(f, v);
+	if (quick)
+	{
+		for (; v != vEnd; v++) if (v->playingPreset != -1 && v->ampenv.segment < TSF_SEGMENT_RELEASE)
+			tsf_voice_endquick(f, v);
+	}
+	else
+	{
+		for (; v != vEnd; v++) if (v->playingPreset != -1 && v->ampenv.segment < TSF_SEGMENT_RELEASE)
+			tsf_voice_end(f, v);
+	}
 }
 
 TSFDEF int tsf_active_voice_count(tsf* f)
