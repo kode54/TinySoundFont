@@ -2099,6 +2099,7 @@ TSFDEF int tsf_channel_midi_control(tsf* f, int channel, int controller, int con
 			tsf_channel_set_pan(f, channel, 0.5f);
 			tsf_channel_set_pitchrange(f, channel, 2.0f);
 			tsf_channel_set_tuning(f, channel, 0);
+			tsf_channel_set_pitchwheel(f, channel, 8192);
 			return 1;
 	}
 	return 1;
