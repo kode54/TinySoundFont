@@ -12,7 +12,7 @@
    [OPTIONAL] #define TSF_NO_STDIO to remove stdio dependency
    [OPTIONAL] #define TSF_MALLOC, TSF_REALLOC, and TSF_FREE to avoid stdlib.h
    [OPTIONAL] #define TSF_MEMCPY, TSF_MEMSET to avoid string.h
-   [OPTIONAL] #define TSF_POW, TSF_POWF, TSF_EXPF, TSF_LOG, TSF_TAN, TSF_LOG10, TSF_SQRTF to avoid math.h
+   [OPTIONAL] #define TSF_POW, TSF_POWF, TSF_EXPF, TSF_LOG, TSF_TAN, TSF_LOG10, TSF_SQRTF, TSF_ROUND, TSF_CEIL, TSF_LOG2, TSF_COS, TSF_SIN to avoid math.h
 
    NOT YET IMPLEMENTED
      - Support for ChorusEffectsSend and ReverbEffectsSend generators
@@ -220,6 +220,7 @@ TSFDEF int tsf_channel_set_pitchwheel(tsf* f, int channel, int pitch_wheel);
 TSFDEF int tsf_channel_set_pitchrange(tsf* f, int channel, float pitch_range);
 TSFDEF int tsf_channel_set_tuning(tsf* f, int channel, float tuning);
 TSFDEF int tsf_channel_set_sustain(tsf* f, int channel, int flag_sustain);
+TSFDEF int tsf_channel_set_reverb_send(tsf* f, int channel, int reverb_send);
 
 // Start or stop playing notes on a channel (needs channel preset to be set)
 //   channel: channel number
@@ -264,6 +265,12 @@ TSFDEF float tsf_channel_get_tuning(tsf* f, int channel);
 #define TSF_RENDER_EFFECTSAMPLEBLOCK 64
 #endif
 
+// The larger this block size is the less setup work the effects need to do,
+// but the larger fixed buffer sizes are needed for each unit of work processed.
+#ifndef TSF_RENDER_GLOBALEFFECTSAMPLEBLOCK
+#define TSF_RENDER_GLOBALEFFECTSAMPLEBLOCK 128
+#endif
+
 // When using tsf_render_short, to do the conversion a buffer of a fixed size is
 // allocated on the stack. On low memory platforms this could be made smaller.
 // Increasing this above 512 should not have a significant impact on performance.
@@ -288,7 +295,7 @@ TSFDEF float tsf_channel_get_tuning(tsf* f, int channel);
 #  define TSF_MEMSET  memset
 #endif
 
-#if !defined(TSF_POW) || !defined(TSF_POWF) || !defined(TSF_EXPF) || !defined(TSF_LOG) || !defined(TSF_TAN) || !defined(TSF_LOG10) || !defined(TSF_SQRTF)
+#if !defined(TSF_POW) || !defined(TSF_POWF) || !defined(TSF_EXPF) || !defined(TSF_LOG) || !defined(TSF_TAN) || !defined(TSF_LOG10) || !defined(TSF_SQRTF) || !defined(TSF_ROUND) || !defined(TSF_CEIL) || !defined(TSF_LOG2) || !defined(TSF_COS) || !defined(TSF_SIN)
 #  include <math.h>
 #  if !defined(__cplusplus) && !defined(NAN) && !defined(powf) && !defined(expf) && !defined(sqrtf)
 #    define powf (float)pow // deal with old math.h
@@ -302,6 +309,11 @@ TSFDEF float tsf_channel_get_tuning(tsf* f, int channel);
 #  define TSF_TAN     tan
 #  define TSF_LOG10   log10
 #  define TSF_SQRTF   sqrtf
+#  define TSF_ROUND   round
+#  define TSF_CEIL    ceil
+#  define TSF_LOG2    log2
+#  define TSF_COS     cos
+#  define TSF_SIN     sin
 #endif
 
 #ifndef TSF_NO_STDIO
@@ -310,6 +322,8 @@ TSFDEF float tsf_channel_get_tuning(tsf* f, int channel);
 
 #ifndef TSF_NO_STDDEF
 #  include <stddef.h>
+#else
+#  define countof(a) (sizeof(a) / sizeof((a)[0]))
 #endif
 
 #define TSF_TRUE 1
@@ -342,6 +356,8 @@ struct tsf
 	float* fontSamples;
 	struct tsf_voice* voices;
 	struct tsf_channels* channels;
+
+	struct tsf_reverb* reverb;
 
 	int presetNum;
 	int voiceNum;
@@ -432,6 +448,18 @@ struct tsf_voice_envelope { unsigned char segment, segmentIsExponential : 1, isA
 struct tsf_voice_lowpass { double QInv, a0, a1, b1, b2, z1, z2; TSF_BOOL active; };
 struct tsf_voice_lfo { int samplesUntil; float level, delta; };
 
+struct tsf_reverb_params { unsigned char level, preLowpass, character, time, delayFeedback, preDelayTime; };
+struct tsf_chorus_params { unsigned char level, preLowpass, feedback, delay, rate, depth, sendLevelToReverb, sendLevelToDelay; };
+struct tsf_delay_params { unsigned char level, preLowpass, timeCenter, timeRatioLeft, timeRatioRight, levelCenter, levelLeft, levelRight, feedback, sendLevelToReverb; };
+
+struct tsf_delay_line { float feedback, gain; float *buffer; unsigned int bufferLength; unsigned int writeIndex; unsigned int time; };
+
+struct tsf_dattorro_delay_line { float *buffer; unsigned int writeIndex, readIndex, writeMask; };
+
+struct tsf_dattorro_reverb { unsigned int preDelay; float preLPF, inputDiffusion[2], decay, decayDiffusion[2], damping, excursionRate, excursionDepth, gain, sampleRate, lp[3], excPhase; unsigned int pDWrite, pDLength; short *taps; float *pDelay; struct tsf_dattorro_delay_line *delays; };
+
+struct tsf_reverb { struct tsf_reverb_params params; struct tsf_dattorro_reverb dattorro; struct tsf_delay_line delayLeft; struct tsf_delay_line delayRight; unsigned int maxBufferSize; float *delayLeftOutput; float *delayRightOutput; float *delayLeftInput; float *delayPreLPF; float sampleRate; float preLPFfc; float preLPFa; float preLPFz; float characterTimeCoefficient, characterGainCoefficient, characterLPFCoefficient, delayGain, panDelayFeedback, delayFeedback; };
+
 struct tsf_region
 {
 	int loop_mode;
@@ -447,6 +475,7 @@ struct tsf_region
 	int freqModLFO, modLfoToPitch;
 	float delayVibLFO;
 	int freqVibLFO, vibLfoToPitch;
+	float reverb;
 };
 
 struct tsf_preset
@@ -463,7 +492,7 @@ struct tsf_voice
 	struct tsf_region* region;
 	double pitchInputTimecents, pitchOutputFactor;
 	double sourceSamplePosition;
-	float  noteGainDB, panFactorLeft, panFactorRight;
+	float  noteGainDB, panFactorLeft, panFactorRight, reverbEffectsSend;
 	unsigned int playIndex, loopStart, loopEnd;
 	struct tsf_voice_envelope ampenv, modenv;
 	struct tsf_voice_lowpass lowpass;
@@ -472,7 +501,7 @@ struct tsf_voice
 
 struct tsf_channel
 {
-	unsigned short presetIndex, bank, pitchWheel, midiPan, midiVolume, midiExpression, midiRPN, midiData : 14, sustain : 1;
+	unsigned short presetIndex, bank, pitchWheel, midiPan, midiVolume, midiExpression, midiRPN, midiData : 14, sustain : 1, reverb : 7;
 	float panOffset, gainDB, pitchRange, tuning;
 };
 
@@ -480,6 +509,7 @@ struct tsf_channels
 {
 	void (*setupVoice)(tsf* f, struct tsf_voice* voice);
 	int channelNum, activeChannel;
+	float reverbInput[TSF_RENDER_GLOBALEFFECTSAMPLEBLOCK];
 	struct tsf_channel channels[1];
 };
 
@@ -583,7 +613,7 @@ static void tsf_region_operator(struct tsf_region* region, tsf_u16 genOper, unio
 		{ GEN_INT   | GEN_INT_LIMIT960     , _TSFREGIONOFFSET(         int, modLfoToVolume       ) }, //13 ModLfoToVolume
 		{ 0                                , (0                                                  ) }, //   Unused
 		{ 0                                , (0                                                  ) }, //15 ChorusEffectsSend (unsupported)
-		{ 0                                , (0                                                  ) }, //16 ReverbEffectsSend (unsupported)
+		{ GEN_FLOAT | GEN_FLOAT_MAX1000    , _TSFREGIONOFFSET(       float, reverb               ) }, //16 ReverbEffectsSend
 		{ GEN_FLOAT | GEN_FLOAT_LIMITPAN   , _TSFREGIONOFFSET(       float, pan                  ) }, //17 Pan
 		{ 0                                , (0                                                  ) }, //   Unused
 		{ 0                                , (0                                                  ) }, //   Unused
@@ -1185,6 +1215,820 @@ static float tsf_voice_lowpass_process(struct tsf_voice_lowpass* e, double In)
 	double Out = In * e->a0 + e->z1; e->z1 = In * e->a1 + e->z2 - e->b1 * Out; e->z2 = In * e->a0 - e->b2 * Out; return (float)Out;
 }
 
+static int tsf_delay_line_setup(struct tsf_delay_line* e, unsigned int maxDelay)
+{
+	e->feedback = 0;
+	e->gain = 1;
+	e->buffer = (float *) TSF_MALLOC(maxDelay * sizeof(float));
+	if (!e->buffer) return 0;
+	TSF_MEMSET(e->buffer, 0, maxDelay * sizeof(float));
+	e->bufferLength = maxDelay;
+	e->writeIndex = 0;
+	e->time = maxDelay - 5;
+	return 1;
+}
+
+static void tsf_delay_line_process(struct tsf_delay_line* e, const float* In, float* Out, int samples)
+{
+	unsigned int writeIndex = e->writeIndex;
+	const unsigned int delay = e->time;
+	float *buffer = e->buffer;
+	const unsigned int bufferLength = e->bufferLength;
+	const float feedback = e->feedback;
+	const float gain = e->gain;
+
+	int i;
+	for (i = 0; i < samples; i++)
+	{
+		int readIndex = (signed)writeIndex - (signed)delay;
+		if (readIndex < 0) readIndex += bufferLength;
+
+		const float delayed = buffer[readIndex];
+		Out[i] = delayed * gain;
+
+		buffer[writeIndex] = In[i] + delayed * feedback;
+
+		if (++writeIndex >= bufferLength) writeIndex = 0;
+	}
+
+	e->writeIndex = writeIndex;
+}
+
+static void tsf_delay_line_clear(struct tsf_delay_line* e)
+{
+	TSF_MEMSET(e->buffer, 0, e->bufferLength * sizeof(float));
+}
+
+static void tsf_delay_line_free(struct tsf_delay_line* e)
+{
+	TSF_FREE(e->buffer); e->buffer = TSF_NULL;
+}
+
+static int tsf_delay_line_copy(struct tsf_delay_line* t, const struct tsf_delay_line* s)
+{
+	if (!t || !s) return 0;
+	TSF_MEMCPY(t, s, sizeof(*t));
+	t->buffer = (float *) TSF_MALLOC(t->bufferLength * sizeof(float));
+	if (!t->buffer) return 0;
+	TSF_MEMCPY(t->buffer, s->buffer, t->bufferLength * sizeof(float));
+	return 1;
+}
+
+static int tsf_dattorro_delay_line_setup(struct tsf_dattorro_delay_line* e, double Delay, float sampleRate)
+{
+	const unsigned int len = (unsigned)(TSF_ROUND(Delay * (double)sampleRate));
+	const unsigned int nextPow2 = (unsigned)TSF_POW(2.0, TSF_CEIL(TSF_LOG2((float)len)));
+	e->buffer = (float *) TSF_MALLOC(nextPow2 * sizeof(float));
+	if (!e->buffer) return 0;
+	TSF_MEMSET(e->buffer, 0, nextPow2 * sizeof(float));
+	e->writeIndex = len - 1;
+	e->readIndex = 0;
+	e->writeMask = nextPow2 - 1;
+	return 1;
+}
+
+static int tsf_dattorro_delay_line_copy(struct tsf_dattorro_delay_line* t, const struct tsf_dattorro_delay_line* s)
+{
+	if (!t || !s) return 0;
+	const unsigned int nextPow2 = s->writeMask + 1;
+	TSF_MEMCPY(t, s, sizeof(*t));
+	t->buffer = (float *) TSF_MALLOC(nextPow2 * sizeof(float));
+	if (!t->buffer) return 0;
+	TSF_MEMCPY(t->buffer, s->buffer, nextPow2 * sizeof(float));
+	return 1;
+}
+
+static void tsf_dattorro_delay_line_free(struct tsf_dattorro_delay_line* e)
+{
+	TSF_FREE(e->buffer); e->buffer = TSF_NULL;
+}
+
+static float tsf_dattorro_delay_line_write(struct tsf_dattorro_reverb* e, int index, float Input)
+{
+	struct tsf_dattorro_delay_line* d = &e->delays[index];
+	return (d->buffer[d->writeIndex] = Input);
+}
+
+static float tsf_dattorro_delay_line_read(struct tsf_dattorro_reverb* e, int index)
+{
+	struct tsf_dattorro_delay_line* d = &e->delays[index];
+	return d->buffer[d->readIndex];
+}
+
+static float tsf_dattorro_delay_line_read_at(struct tsf_dattorro_reverb* e, int index, int offset)
+{
+	struct tsf_dattorro_delay_line* d = &e->delays[index];
+	return d->buffer[(d->readIndex + offset) & d->writeMask];
+}
+
+static float tsf_dattorro_delay_line_read_cubic_at(struct tsf_dattorro_reverb* e, int index, float offset) {
+	struct tsf_dattorro_delay_line* d = &e->delays[index];
+	const float frac = offset - (float)((int)offset);
+	const unsigned int mask = d->writeMask;
+
+	unsigned int intOffset = ((int)offset) + d->readIndex - 1;
+
+	const float x0 = d->buffer[intOffset++ & mask],
+		x1 = d->buffer[intOffset++ & mask],
+		x2 = d->buffer[intOffset++ & mask],
+		x3 = d->buffer[intOffset & mask];
+
+	const float a = (3.0 * (x1 - x2) - x0 + x3) / 2.0,
+		b = 2.0 * x2 + x0 - (5.0 * x1 + x3) / 2.0,
+		c = (x2 - x0) / 2.0;
+
+	return ((a * frac + b) * frac + c) * frac + x1;
+}
+
+static int tsf_dattorro_reverb_setup(struct tsf_dattorro_reverb* e, float sampleRate)
+{
+	static const double templateDelays[] = {
+		0.004771345, 0.003595309, 0.012734787, 0.009307483,
+		0.022579886, 0.149625349, 0.060481839, 0.1249958,
+		0.030509727, 0.141695508, 0.089244313, 0.106280031
+	};
+
+	static const double templateTaps[] = {
+		0.008937872, 0.099929438, 0.064278754, 0.067067639,
+		0.066866033, 0.006283391, 0.035818689, 0.011861161,
+		0.121870905, 0.041262054, 0.08981553, 0.070931756,
+		0.011256342, 0.004065724
+	};
+
+	int i;
+
+	e->preDelay = 0;
+	e->preLPF = 0.5f;
+	e->inputDiffusion[0] = 0.75f;
+	e->inputDiffusion[1] = 0.625f;
+	e->decay = 0.5f;
+	e->decayDiffusion[0] = 0.7f;
+	e->decayDiffusion[1] = 0.5f;
+	e->damping = 0.005f;
+	e->excursionRate = 0.1f;
+	e->excursionDepth = 0.2f;
+	e->gain = 1.0f;
+	e->sampleRate = sampleRate;
+	e->lp[0] = 0;
+	e->lp[1] = 0;
+	e->lp[2] = 0;
+	e->excPhase = 0;
+	e->pDWrite = 0;
+
+	e->delays = TSF_NULL;
+	e->taps = TSF_NULL;
+
+	e->pDLength = (unsigned int) TSF_ROUND(sampleRate);
+	e->pDelay = (float *) TSF_MALLOC(e->pDLength * sizeof(float));
+	if (!e->pDelay) return 0;
+	TSF_MEMSET(e->pDelay, 0, e->pDLength * sizeof(float));
+
+	e->delays = (struct tsf_dattorro_delay_line *) TSF_MALLOC(12 * sizeof(*e->delays));
+	if (!e->delays) return 0;
+	TSF_MEMSET(e->delays, 0, 12 * sizeof(*e->delays));
+
+	for (i = 0; i < 12; i++)
+	{
+		if (!tsf_dattorro_delay_line_setup(&e->delays[i], templateDelays[i], sampleRate))
+			return 0;
+	}
+
+	e->taps = (short *) TSF_MALLOC(14 * sizeof(short));
+	if (!e->taps) return 0;
+
+	for (i = 0; i < 14; i++)
+		e->taps[i] = (short)(TSF_ROUND(templateTaps[i] * (double)sampleRate));
+
+	return 1;
+}
+
+static void tsf_dattorro_reverb_process(struct tsf_dattorro_reverb* e, const float* Input, float* outputL, float* outputR, int samples, int channels)
+{
+	const unsigned int pd = e->preDelay;
+	const float fi = e->inputDiffusion[0];
+	const float si = e->inputDiffusion[1];
+	const float dc = e->decay;
+	const float ft = e->decayDiffusion[0];
+	const float st = e->decayDiffusion[1];
+	const float dp = 1.0 - e->damping;
+	const float ex = e->excursionRate / e->sampleRate;
+	const float ed = (e->excursionDepth * e->sampleRate) / 1000.0;
+	const unsigned int blockStart = e->pDWrite;
+	const unsigned int blockLength = e->pDLength;
+	const float gain = e->gain;
+
+	int i, j;
+
+	for (i = 0; i < samples; i++)
+	{
+		e->pDelay[(blockStart + i) % blockLength] = Input[i];
+	}
+
+	for (i = 0; i < samples; i++)
+	{
+		e->lp[0] +=
+		e->preLPF *
+		(e->pDelay[
+			(blockLength + blockStart - pd + i) % blockLength
+		] -
+		 e->lp[0]);
+
+#define delayWrite(n, v)   tsf_dattorro_delay_line_write(e, n, v)
+#define delayRead(n)       tsf_dattorro_delay_line_read(e, n)
+#define delayReadAt(n, p)  tsf_dattorro_delay_line_read_at(e, n, p)
+#define delayReadCAt(n, p) tsf_dattorro_delay_line_read_cubic_at(e, n, p)
+
+		// Pre-tank
+		float pre = delayWrite(0, e->lp[0] - fi * delayRead(0));
+		pre = delayWrite(1, fi * (pre - delayRead(1)) + delayRead(0));
+		pre = delayWrite(2, fi *  pre + delayRead(1)  - si * delayRead(2));
+		pre = delayWrite(3, si * (pre - delayRead(3)) + delayRead(2));
+
+		const float split = si * pre + delayRead(3);
+
+		// Excursions
+		// Could be optimized?
+		const float exc = ed * (1.0 + TSF_COS(e->excPhase * 6.28f));
+		const float exc2 = ed * (1.0 + TSF_SIN(e->excPhase * 6.2847f));
+
+		// Left loop
+		float temp = delayWrite(4, split + dc * delayRead(11) + ft * delayReadCAt(4, exc)); // Tank diffuse 1
+		delayWrite(5, delayReadCAt(4, exc) - ft * temp); // Long delay 1
+		e->lp[1] += dp * (delayRead(5) - e->lp[1]); // Damp 1
+		temp = delayWrite(6, dc * e->lp[1] - st * delayRead(6)); // Tank diffuse 2
+		delayWrite(7, delayRead(6) + st * temp); // Long delay 2
+
+		// Right loop
+		temp = delayWrite(8, split + dc * delayRead(7) + ft * delayReadCAt(8, exc2)); // Tank diffuse 3
+		delayWrite(9, delayReadCAt(8, exc2) - ft * temp); // Long delay 3
+		e->lp[2] += dp * (delayRead(9) - e->lp[2]); // Damp 2
+		temp = delayWrite(10, dc * e->lp[2] - st * delayRead(10)); // Tank diffuse 4
+		delayWrite(11, delayRead(10) + st * temp); // Long delay 4
+
+		// Mix down
+		const float leftSample =
+			delayReadAt(9, e->taps[0]) +
+			delayReadAt(9, e->taps[1]) -
+			delayReadAt(10, e->taps[2]) +
+			delayReadAt(11, e->taps[3]) -
+			delayReadAt(5, e->taps[4]) -
+			delayReadAt(6, e->taps[5]) -
+			delayReadAt(7, e->taps[6]);
+
+		const float rightSample =
+			delayReadAt(5, e->taps[7]) +
+			delayReadAt(5, e->taps[8]) -
+			delayReadAt(6, e->taps[9]) +
+			delayReadAt(7, e->taps[10]) -
+			delayReadAt(9, e->taps[11]) -
+			delayReadAt(10, e->taps[12]) -
+			delayReadAt(11, e->taps[13]);
+
+		if (outputL && !outputR)
+		{
+			if (channels == 2)
+			{
+				*outputL++ += leftSample * gain;
+				*outputL++ += rightSample * gain;
+			}
+			else
+			{
+				*outputL++ += ((rightSample + rightSample) / 2.0) * e->gain;
+			}
+		}
+		else if (outputL && outputR)
+		{
+			*outputL++ += leftSample * gain;
+			*outputR++ += rightSample * gain;
+		}
+
+#undef delayWrite
+#undef delayRead
+#undef delayReadAt
+#undef delayReadCAt
+
+		e->excPhase += ex;
+
+		// Advance delays
+		for (j = 0; j < 12; j++)
+		{
+			struct tsf_dattorro_delay_line* d = &e->delays[j];
+			d->writeIndex = (d->writeIndex + 1) & d->writeMask;
+			d->readIndex = (d->readIndex + 1) & d->writeMask;
+		}
+	}
+	e->pDWrite = (blockStart + samples) % blockLength;
+}
+
+static void tsf_dattorro_reverb_free(struct tsf_dattorro_reverb* e)
+{
+	TSF_FREE(e->pDelay); e->pDelay = TSF_NULL;
+	TSF_FREE(e->taps);   e->taps = TSF_NULL;
+	if (e->delays)
+	{
+		int i;
+		for (i = 0; i < 12; i++)
+			tsf_dattorro_delay_line_free(&e->delays[i]);
+	}
+	TSF_FREE(e->delays); e->delays = TSF_NULL;
+}
+
+static int tsf_dattorro_reverb_copy(struct tsf_dattorro_reverb* t, const struct tsf_dattorro_reverb* s)
+{
+	int i;
+	if (!t || !s) return 0;
+	TSF_MEMCPY(t, s, sizeof(*t));
+	t->delays = TSF_NULL;
+	t->pDelay = (float *) TSF_MALLOC(t->pDLength * sizeof(float));
+	if (!t->pDelay) return 0;
+	t->delays = (struct tsf_dattorro_delay_line *) TSF_MALLOC(12 * sizeof(*t->delays));
+	if (!t->delays) return 0;
+	for (i = 0; i < 12; i++)
+	{
+		t->delays[i].buffer = TSF_NULL;
+	}
+	for (i = 0; i < 12; i++)
+	{
+		if (!tsf_dattorro_delay_line_copy(&t->delays[i], &s->delays[i]))
+			return 0;
+	}
+	return 1;
+}
+
+static int tsf_reverb_setup(struct tsf_reverb** ee, float sampleRate, int maxBufferSize)
+{
+	struct tsf_reverb* e = (struct tsf_reverb *) TSF_MALLOC(sizeof(*e));
+	if (!e) return 0;
+
+	*ee = e;
+
+	e->maxBufferSize = maxBufferSize;
+	e->sampleRate = sampleRate;
+
+	e->params.delayFeedback = 0;
+	e->params.character = 0;
+	e->params.time = 0;
+	e->params.preDelayTime = 0;
+	e->params.level = 0;
+	e->params.preLowpass = 0;
+
+	e->preLPFfc = 8000.0;
+	e->preLPFa = 0;
+	e->preLPFz = 0;
+
+	e->characterTimeCoefficient = 1.0;
+	e->characterGainCoefficient = 1.0;
+	e->characterLPFCoefficient = 0;
+
+	e->delayGain = 1;
+
+	e->panDelayFeedback = 0;
+
+	e->delayLeftOutput = TSF_NULL;
+	e->delayRightOutput = TSF_NULL;
+	e->delayLeftInput = TSF_NULL;
+	e->delayPreLPF = TSF_NULL;
+
+	e->delayLeft.buffer = TSF_NULL;
+	e->delayRight.buffer = TSF_NULL;
+
+	e->delayLeftOutput = (float *) TSF_MALLOC(maxBufferSize * sizeof(float));
+	if (!e->delayLeftOutput) return 0;
+	TSF_MEMSET(e->delayLeftOutput, 0, maxBufferSize * sizeof(float));
+	e->delayRightOutput = (float *) TSF_MALLOC(maxBufferSize * sizeof(float));
+	if (!e->delayRightOutput) return 0;
+	TSF_MEMSET(e->delayRightOutput, 0, maxBufferSize * sizeof(float));
+	e->delayLeftInput = (float *) TSF_MALLOC(maxBufferSize * sizeof(float));
+	if (!e->delayLeftInput) return 0;
+	TSF_MEMSET(e->delayLeftInput, 0, maxBufferSize * sizeof(float));
+	e->delayPreLPF = (float *) TSF_MALLOC(maxBufferSize * sizeof(float));
+	if (!e->delayPreLPF) return 0;
+	TSF_MEMSET(e->delayPreLPF, 0, maxBufferSize * sizeof(float));
+	if (!tsf_dattorro_reverb_setup(&e->dattorro, sampleRate)) return 0;
+	if (!tsf_delay_line_setup(&e->delayLeft, (unsigned)sampleRate)) return 0;
+	if (!tsf_delay_line_setup(&e->delayRight, (unsigned)sampleRate)) return 0;
+	return 1;
+}
+
+static void tsf_reverb_free(struct tsf_reverb* e)
+{
+	TSF_FREE(e->delayLeftOutput); e->delayLeftOutput = TSF_NULL;
+	TSF_FREE(e->delayRightOutput); e->delayRightOutput = TSF_NULL;
+	TSF_FREE(e->delayLeftInput); e->delayLeftInput = TSF_NULL;
+	TSF_FREE(e->delayPreLPF); e->delayPreLPF = TSF_NULL;
+	tsf_dattorro_reverb_free(&e->dattorro);
+	tsf_delay_line_free(&e->delayLeft);
+	tsf_delay_line_free(&e->delayRight);
+	TSF_FREE(e);
+}
+
+static int tsf_reverb_copy(struct tsf_reverb** tt, const struct tsf_reverb* s)
+{
+	if (!tt || !s) return 0;
+	struct tsf_reverb *t = (struct tsf_reverb *) TSF_MALLOC(sizeof(*t));
+	if (!t) return 0;
+	*tt = t;
+	TSF_MEMCPY(t, s, sizeof(*t));
+	t->delayLeftOutput = TSF_NULL;
+	t->delayRightOutput = TSF_NULL;
+	t->delayLeftInput = TSF_NULL;
+	t->delayPreLPF = TSF_NULL;
+	t->delayLeftOutput = (float *) TSF_MALLOC(t->maxBufferSize * sizeof(float));
+	if (!t->delayLeftOutput) return 0;
+	TSF_MEMCPY(t->delayLeftOutput, s->delayLeftOutput, t->maxBufferSize * sizeof(float));
+	t->delayRightOutput = (float *) TSF_MALLOC(t->maxBufferSize * sizeof(float));
+	if (!t->delayRightOutput) return 0;
+	TSF_MEMCPY(t->delayRightOutput, s->delayRightOutput, t->maxBufferSize * sizeof(float));
+	t->delayLeftInput = (float *) TSF_MALLOC(t->maxBufferSize * sizeof(float));
+	if (!t->delayLeftInput) return 0;
+	TSF_MEMCPY(t->delayLeftInput, s->delayLeftInput, t->maxBufferSize * sizeof(float));
+	t->delayPreLPF = (float *) TSF_MALLOC(t->maxBufferSize * sizeof(float));
+	if (!t->delayPreLPF) return 0;
+	TSF_MEMCPY(t->delayPreLPF, s->delayPreLPF, t->maxBufferSize * sizeof(float));
+	if (!tsf_dattorro_reverb_copy(&t->dattorro, &s->dattorro) ||
+		!tsf_delay_line_copy(&t->delayLeft, &s->delayLeft) ||
+		!tsf_delay_line_copy(&t->delayRight, &s->delayRight))
+		return 0;
+	return 1;
+}
+
+static void tsf_reverb_update_feedback(struct tsf_reverb* e)
+{
+	const float x = (float)e->params.delayFeedback / 127.0;
+	const float exp = 1.0 - TSF_POW(1.0 - x, 1.9f);
+	if (e->params.character == 6)
+	{
+		e->delayLeft.feedback = exp * 0.73f;
+	}
+	else
+	{
+		e->delayLeft.feedback = e->delayRight.feedback = 0;
+		e->panDelayFeedback = exp * 0.73f;
+	}
+}
+
+static void tsf_reverb_update_lowpass(struct tsf_reverb* e)
+{
+	const float preLPF = 0.1 + (float)(7 - e->params.preLowpass) / 14.0 + e->characterLPFCoefficient;
+	e->dattorro.preLPF = (preLPF < 1.0) ? preLPF : 1.0;
+}
+
+static void tsf_reverb_update_gain(struct tsf_reverb* e)
+{
+	e->dattorro.gain = ((float)e->params.level / 348.0) * e->characterGainCoefficient;
+	e->delayGain = ((float)e->params.level / 127.0) * 1.5;
+}
+
+static void tsf_reverb_update_time(struct tsf_reverb* e)
+{
+	const float t = (float)e->params.time / 127.0;
+	e->dattorro.decay = e->characterTimeCoefficient * (0.05 + 0.65 * t);
+	// Delay at 127 is exactly 0.4468 seconds
+	// The minimum value (delay 0) seems to be 21 samples
+	const unsigned int calcSamples = (unsigned int)(t * e->sampleRate * 0.4468);
+	const unsigned int timeSamples = (calcSamples > 21) ? calcSamples : 21;
+	if (e->params.character == 7)
+	{
+		// Half the delay time
+		e->delayRight.time = e->delayLeft.time = timeSamples / 2;
+	}
+	else
+	{
+		e->delayLeft.time = timeSamples;
+	}
+}
+
+static void tsf_reverb_set_delay_feedback(struct tsf_reverb* e, unsigned char delayFeedback)
+{
+	e->params.delayFeedback = delayFeedback;
+	tsf_reverb_update_feedback(e);
+}
+
+static void tsf_reverb_set_character(struct tsf_reverb* e, unsigned char character)
+{
+	e->params.character = character;
+	e->dattorro.damping = 0.005;
+	e->characterTimeCoefficient = 1;
+	e->characterGainCoefficient = 1;
+	e->characterLPFCoefficient = 0;
+	e->dattorro.inputDiffusion[0] = 0.75;
+	e->dattorro.inputDiffusion[1] = 0.625;
+	e->dattorro.decayDiffusion[0] = 0.7;
+	e->dattorro.decayDiffusion[1] = 0.5;
+	e->dattorro.excursionRate = 0.5;
+	e->dattorro.excursionDepth = 0.7;
+
+	// Tested all characters on level = 64, preset: Hall2
+	// File: gs_reverb_character_test.ts, compare spessasynth to SC-VA
+	// Tuned by me, though I'm not very good at it :-)
+	switch (character)
+	{
+		case 0: {
+			// Room1
+			e->dattorro.damping = 0.85;
+			e->characterTimeCoefficient = 0.9;
+			e->characterGainCoefficient = 0.7;
+			e->characterLPFCoefficient = 0.2;
+			break;
+		}
+
+		case 1: {
+			// Room2
+			e->dattorro.damping = 0.2;
+			e->characterGainCoefficient = 0.5;
+			e->characterTimeCoefficient = 1;
+			e->dattorro.decayDiffusion[1] = 0.64;
+			e->dattorro.decayDiffusion[0] = 0.6;
+			e->characterLPFCoefficient = 0.2;
+			break;
+		}
+
+		case 2: {
+			// Room3
+			e->dattorro.damping = 0.56;
+			e->characterGainCoefficient = 0.55;
+			e->characterTimeCoefficient = 1;
+			e->dattorro.decayDiffusion[1] = 0.64;
+			e->dattorro.decayDiffusion[0] = 0.6;
+			e->characterLPFCoefficient = 0.1;
+			break;
+		}
+
+		case 3: {
+			// Hall1
+			e->dattorro.damping = 0.6;
+			e->characterGainCoefficient = 1;
+			e->characterLPFCoefficient = 0;
+			e->dattorro.decayDiffusion[1] = 0.7;
+			e->dattorro.decayDiffusion[0] = 0.66;
+			break;
+		}
+
+		case 4: {
+			// Hall2
+			e->characterGainCoefficient = 0.75;
+			e->dattorro.damping = 0.2;
+			e->characterLPFCoefficient = 0.2;
+			break;
+		}
+
+		case 5: {
+			// Plate
+			e->characterGainCoefficient = 0.55;
+			e->dattorro.damping = 0.65;
+			e->characterTimeCoefficient = 0.5;
+			break;
+		}
+	}
+
+	// Update values
+	tsf_reverb_update_time(e);
+	tsf_reverb_update_gain(e);
+	tsf_reverb_update_lowpass(e);
+	tsf_reverb_update_feedback(e);
+	tsf_delay_line_clear(&e->delayLeft);
+	tsf_delay_line_clear(&e->delayRight);
+}
+
+static void tsf_reverb_set_time(struct tsf_reverb* e, unsigned char time)
+{
+	e->params.time = time;
+	tsf_reverb_update_time(e);
+}
+
+static void tsf_reverb_set_pre_delay_time(struct tsf_reverb* e, unsigned char preDelayTime)
+{
+	e->params.preDelayTime = preDelayTime;
+	e->dattorro.preDelay = ((float)preDelayTime / 1000.0) * e->sampleRate;
+}
+
+static void tsf_reverb_set_level(struct tsf_reverb* e, unsigned char level)
+{
+	e->params.level = level;
+	tsf_reverb_update_gain(e);
+}
+
+static void tsf_reverb_set_pre_lowpass(struct tsf_reverb* e, unsigned char preLowpass)
+{
+	e->params.preLowpass = preLowpass;
+	e->preLPFfc = 8000.0 * TSF_POW(0.63, (float)preLowpass);
+	const float decay = TSF_EXPF((-2.0 * TSF_PI * e->preLPFfc) / e->sampleRate);
+	e->preLPFa = 1.0 - decay;
+	tsf_reverb_update_lowpass(e);
+}
+
+static void tsf_reverb_set_macro(struct tsf_reverb* e, unsigned char value)
+{
+	if (!e) return;
+
+	// SC-8850 manual page 81
+	tsf_reverb_set_level(e, 64);
+	tsf_reverb_set_pre_delay_time(e, 0);
+	tsf_reverb_set_character(e, value);
+	switch (value)
+	{
+			/**
+			 * REVERB MACRO is a macro parameter that allows global setting of reverb parameters.
+			 * When you select the reverb type with REVERB MACRO, each reverb parameter will be set to their most
+			 * suitable value.
+			 *
+			 * Room1, Room2, Room3
+			 * These reverbs simulate the reverberation of a room. They provide a well-defined
+			 * spacious reverberation.
+			 * Hall1, Hall2
+			 * These reverbs simulate the reverberation of a concert hall. They provide a deeper
+			 * reverberation than the Room reverbs.
+			 * Plate
+			 * This simulates a plate reverb (a studio device using a metal plate).
+			 * Delay
+			 * This is a conventional delay that produces echo effects.
+			 * Panning Delay
+			 * This is a special delay in which the delayed sounds move left and right.
+			 * It is effective when you are listening in stereo.
+			 */
+		case 0: {
+			// Room1
+			tsf_reverb_set_pre_lowpass(e, 3);
+			tsf_reverb_set_time(e, 80);
+			tsf_reverb_set_delay_feedback(e, 0);
+			tsf_reverb_set_pre_delay_time(e, 0);
+			break;
+		}
+
+		case 1: {
+			// Room2
+			tsf_reverb_set_pre_lowpass(e, 4);
+			tsf_reverb_set_time(e, 56);
+			tsf_reverb_set_delay_feedback(e, 0);
+			break;
+		}
+
+		case 2: {
+			// Room3
+			tsf_reverb_set_pre_lowpass(e, 0);
+			tsf_reverb_set_time(e, 72);
+			tsf_reverb_set_delay_feedback(e, 0);
+			break;
+		}
+
+		case 3: {
+			// Hall1
+			tsf_reverb_set_pre_lowpass(e, 4);
+			tsf_reverb_set_time(e, 72);
+			tsf_reverb_set_delay_feedback(e, 0);
+			break;
+		}
+
+		case 4: {
+			// Hall2
+			tsf_reverb_set_pre_lowpass(e, 0);
+			tsf_reverb_set_time(e, 64);
+			tsf_reverb_set_delay_feedback(e, 0);
+			break;
+		}
+
+		case 5: {
+			// Plate
+			tsf_reverb_set_pre_lowpass(e, 0);
+			tsf_reverb_set_time(e, 88);
+			tsf_reverb_set_delay_feedback(e, 0);
+			break;
+		}
+
+		case 6: {
+			// Delay
+			tsf_reverb_set_pre_lowpass(e, 0);
+			tsf_reverb_set_time(e, 32);
+			tsf_reverb_set_delay_feedback(e, 40);
+			break;
+		}
+
+		case 7: {
+			// Panning delay
+			tsf_reverb_set_pre_lowpass(e, 0);
+			tsf_reverb_set_time(e, 64);
+			tsf_reverb_set_delay_feedback(e, 32);
+			break;
+		}
+
+		default: {
+			// Check for invalid macros
+			// Testcase: 18 - Dichromatic Lotus Butterfly ~ Ancients (ZUN).mid
+			return;
+		}
+	}
+}
+
+static void tsf_reverb_process(struct tsf_reverb* e, const float* Input, float* OutputL, float* OutputR, int samples, int channels)
+{
+	int i;
+	switch (e->params.character)
+	{
+		default: {
+			// Reverb
+			tsf_dattorro_reverb_process(&e->dattorro, Input, OutputL, OutputR, samples, channels);
+			return;
+		}
+
+		case 6: {
+			// Delay
+			// Process pre-lowpass
+			float *delayIn;
+			if (e->params.preLowpass > 0)
+			{
+				float *preLPF = e->delayPreLPF;
+				float z = e->preLPFz;
+				const float a = e->preLPFa;
+				for (i = 0; i < samples; i++)
+				{
+					const float x = Input[i];
+					z += a * (x - z);
+					preLPF[i] = z;
+				}
+				e->preLPFz = z;
+				delayIn = preLPF;
+			}
+			else
+			{
+				delayIn = Input;
+			}
+
+			tsf_delay_line_process(&e->delayLeft, delayIn, e->delayLeftOutput, samples);
+
+			// Mix down
+			const float g = e->delayGain;
+			const float* delay = e->delayLeftOutput;
+			for (i = 0; i < samples; i++)
+			{
+				const float sample = delay[i] * g;
+				if (OutputL)
+				{
+					*OutputL += sample;
+					OutputL += channels;
+				}
+				if (OutputR)
+				{
+					*OutputR++ += sample;
+				}
+			}
+			return;
+		}
+
+		case 7: {
+			// Panning Delay
+			// Process pre-lowpass
+			float *delayIn;
+			if (e->params.preLowpass > 0)
+			{
+				float *preLPF = e->delayPreLPF;
+				float z = e->preLPFz;
+				const float a = e->preLPFa;
+				for (i = 0; i < samples; i++)
+				{
+					const float x = Input[i];
+					z += a * (x - z);
+					preLPF[i] = z;
+				}
+				e->preLPFz = z;
+				delayIn = preLPF;
+			}
+			else
+			{
+				delayIn = Input;
+			}
+
+			// Mix right into left
+			const float fb = e->panDelayFeedback;
+			float *delayLeftInput = e->delayLeftInput;
+			float *delayLeftOutput = e->delayLeftOutput;
+			float *delayRightOutput = e->delayRightOutput;
+			for (i = 0; i < samples; i++)
+			{
+				delayLeftInput[i] = delayIn[i] + delayRightOutput[i] * fb;
+			}
+			// Process left
+			tsf_delay_line_process(&e->delayLeft, delayLeftInput, delayLeftOutput, samples);
+			// Process right
+			tsf_delay_line_process(&e->delayRight, delayLeftOutput, delayRightOutput, samples);
+			// Mix
+			const float g = e->delayGain;
+			for (i = 0; i < samples; i++)
+			{
+				if (OutputL)
+				{
+					*OutputL += delayLeftOutput[i] * g;
+					OutputL += channels;
+				}
+				if (OutputR)
+				{
+					*OutputR++ += delayRightOutput[i] * g;
+				}
+			}
+			return;
+		}
+	}
+}
+
 static void tsf_voice_lfo_setup(struct tsf_voice_lfo* e, float delay, int freqCents, float outSampleRate)
 {
 	e->samplesUntil = (int)(delay * outSampleRate);
@@ -1272,6 +2116,8 @@ static void tsf_voice_render_separate(tsf* f, struct tsf_voice* v, float* output
 	TSF_BOOL dynamicGain = (region->modLfoToVolume != 0);
 	float noteGain = 0, tmpModLfoToVolume;
 
+	float *reverbInput = f->channels->reverbInput;
+
 	if (dynamicLowpass)
 	{
 		tmpInitialFilterFc = (float)region->initialFilterFc;
@@ -1337,6 +2183,8 @@ static void tsf_voice_render_separate(tsf* f, struct tsf_voice* v, float* output
 		if (updateModLFO) tsf_voice_lfo_process(&v->modlfo, blockSamples);
 		if (updateVibLFO) tsf_voice_lfo_process(&v->viblfo, blockSamples);
 
+		float reverbGain = v->reverbEffectsSend * gainMono;
+
 		switch (f->outputmode)
 		{
 			case TSF_STEREO_INTERLEAVED:
@@ -1351,6 +2199,8 @@ static void tsf_voice_render_separate(tsf* f, struct tsf_voice* v, float* output
 
 					// Low-pass filter.
 					if (tmpLowpass.active) val = tsf_voice_lowpass_process(&tmpLowpass, (double)val);
+
+					*reverbInput++ += val * reverbGain;
 
 					*outL++ += val * gainLeft;
 					*outL++ += val * gainRight;
@@ -1374,6 +2224,8 @@ static void tsf_voice_render_separate(tsf* f, struct tsf_voice* v, float* output
 					// Low-pass filter.
 					if (tmpLowpass.active) val = tsf_voice_lowpass_process(&tmpLowpass, (double)val);
 
+					*reverbInput++ += val * reverbGain;
+
 					*outL++ += val * gainLeft;
 					*outR++ += val * gainRight;
 
@@ -1394,6 +2246,8 @@ static void tsf_voice_render_separate(tsf* f, struct tsf_voice* v, float* output
 					// Low-pass filter.
 					if (tmpLowpass.active) val = tsf_voice_lowpass_process(&tmpLowpass, (double)val);
 
+					*reverbInput++ += val * reverbGain;
+
 					*outL++ += val * gainMono;
 
 					// Next sample.
@@ -1412,11 +2266,6 @@ static void tsf_voice_render_separate(tsf* f, struct tsf_voice* v, float* output
 
 	v->sourceSamplePosition = tmpSourceSamplePosition;
 	if (tmpLowpass.active || dynamicLowpass) v->lowpass = tmpLowpass;
-}
-
-static void tsf_voice_render(tsf* f, struct tsf_voice* v, float* outputBuffer, int numSamples)
-{
-	tsf_voice_render_separate(f, v, outputBuffer, f->outputmode == TSF_STEREO_UNWEAVED ? outputBuffer + numSamples : TSF_NULL, numSamples);
 }
 
 TSFDEF tsf* tsf_load(struct tsf_stream* stream)
@@ -1532,6 +2381,8 @@ TSFDEF tsf* tsf_copy(tsf* f)
 	res->voices = TSF_NULL;
 	res->voiceNum = 0;
 	res->channels = TSF_NULL;
+	if(res->reverb)
+		tsf_reverb_copy(&res->reverb, f->reverb);
 	(*res->refCount)++;
 	return res;
 }
@@ -1547,6 +2398,7 @@ TSFDEF void tsf_close(tsf* f)
 		TSF_FREE(f->fontSamples);
 		TSF_FREE(f->refCount);
 	}
+	if (f->reverb) { tsf_reverb_free(f->reverb); f->reverb = TSF_NULL; }
 	TSF_FREE(f->channels);
 	TSF_FREE(f->voices);
 	TSF_FREE(f);
@@ -1559,6 +2411,8 @@ TSFDEF void tsf_reset(tsf* f)
 		if (v->playingPreset != -1 && (v->ampenv.segment < TSF_SEGMENT_RELEASE || v->ampenv.parameters.release!=0.0f))
 			tsf_voice_endquick(f, v);
 	if (f->channels) { TSF_FREE(f->channels); f->channels = TSF_NULL; }
+	if (!f->reverb && f->outSampleRate) tsf_reverb_setup(&f->reverb, f->outSampleRate, TSF_RENDER_GLOBALEFFECTSAMPLEBLOCK);
+	tsf_reverb_set_macro(f->reverb, 4); // Hall2 default
 }
 
 TSFDEF int tsf_get_presetindex(const tsf* f, int bank, int preset_number)
@@ -1591,6 +2445,8 @@ TSFDEF void tsf_set_output(tsf* f, enum TSFOutputMode outputmode, int samplerate
 	f->outputmode = outputmode;
 	f->outSampleRate = (float)(samplerate >= 1 ? (float)samplerate : 44100.0f);
 	f->globalGainDB = global_gain_db;
+	if (!f->reverb)
+		tsf_reverb_setup(&f->reverb, f->outSampleRate, TSF_RENDER_GLOBALEFFECTSAMPLEBLOCK);
 }
 
 TSFDEF void tsf_set_volume(tsf* f, float global_volume)
@@ -1689,8 +2545,9 @@ TSFDEF int tsf_note_on(tsf* f, int preset_index, int key, float vel)
 		{
 			tsf_voice_calcpitchratio(voice, 0, f->outSampleRate);
 			// The SFZ spec is silent about the pan curve, but a 3dB pan law seems common. This sqrt() curve matches what Dimension LE does; Alchemy Free seems closer to sin(adjustedPan * pi/2).
-			voice->panFactorLeft  = TSF_SQRTF(0.5f - region->pan);
-			voice->panFactorRight = TSF_SQRTF(0.5f + region->pan);
+			voice->panFactorLeft     = TSF_SQRTF(0.5f - region->pan);
+			voice->panFactorRight    = TSF_SQRTF(0.5f + region->pan);
+			voice->reverbEffectsSend = 0;
 		}
 
 		// Offset/end.
@@ -1806,38 +2663,73 @@ TSFDEF void tsf_render_short(tsf* f, short* buffer, int samples, int flag_mixing
 	}
 }
 
+static void tsf_effects_clear(tsf* f)
+{
+	if (f && f->channels)
+	{
+		TSF_MEMSET(f->channels->reverbInput, 0, sizeof(f->channels->reverbInput));
+	}
+}
+
+static void tsf_effects_process(tsf* f, float* bufferL, float* bufferR, int samples, int channels)
+{
+	int i;
+	if (!f->channels) return;
+	tsf_reverb_process(f->reverb, f->channels->reverbInput, bufferL, bufferR, samples, channels);
+}
+
+static void tsf_render_voices_separate(tsf* f, float* bufferL, float* bufferR, int samples)
+{
+	int channels = f->outputmode == TSF_STEREO_INTERLEAVED ? 2 : 1;
+	while (samples)
+	{
+		const int maxBatch = TSF_RENDER_GLOBALEFFECTSAMPLEBLOCK;
+		const int samplesBatch = samples < maxBatch ? samples : maxBatch;
+		struct tsf_voice *v, *vEnd;
+		tsf_effects_clear(f);
+		for (v = f->voices, vEnd = v ? v + f->voiceNum : TSF_NULL; v != vEnd; v++)
+			if (v->playingPreset != -1)
+				tsf_voice_render_separate(f, v, bufferL, bufferR, samplesBatch);
+		tsf_effects_process(f, bufferL, bufferR, samplesBatch, channels);
+		bufferL += samplesBatch * channels;
+		if (bufferR) bufferR += samplesBatch;
+		samples -= samplesBatch;
+	}
+}
+
+static void tsf_render_voices(tsf* f, float* buffer, int samples)
+{
+	tsf_render_voices_separate(f, buffer, f->outputmode == TSF_STEREO_UNWEAVED ? buffer + samples : TSF_NULL, samples);
+}
+
 TSFDEF void tsf_render_float(tsf* f, float* buffer, int samples, int flag_mixing)
 {
-	struct tsf_voice *v = f->voices, *vEnd = v ? v + f->voiceNum : TSF_NULL;
 	if (!flag_mixing) TSF_MEMSET(buffer, 0, (f->outputmode == TSF_MONO ? 1 : 2) * sizeof(float) * (unsigned)samples);
-	for (; v != vEnd; v++)
-		if (v->playingPreset != -1)
-			tsf_voice_render(f, v, buffer, samples);
+	tsf_render_voices(f, buffer, samples);
 }
 
 TSFDEF void tsf_render_float_separate(tsf* f, float* bufferL, float* bufferR, int samples, int flag_mixing)
 {
-	struct tsf_voice *v = f->voices, *vEnd = v ? v + f->voiceNum : TSF_NULL;
 	if (!flag_mixing)
 	{
 		TSF_MEMSET(bufferL, 0, sizeof(float) * samples);
 		TSF_MEMSET(bufferR, 0, sizeof(float) * samples);
 	}
-	for (; v != vEnd; v++)
-		if (v->playingPreset != -1)
-			tsf_voice_render_separate(f, v, bufferL, bufferR, samples);
+	tsf_render_voices_separate(f, bufferL, bufferR, samples);
 }
 
 static void tsf_channel_setup_voice(tsf* f, struct tsf_voice* v)
 {
 	struct tsf_channel* c = &f->channels->channels[f->channels->activeChannel];
 	float newpan = v->region->pan + c->panOffset;
+	float reverb = (v->region->reverb / 1000.0) * ((float)c->reverb / 127.0);
 	v->playingChannel = f->channels->activeChannel;
 	v->noteGainDB += c->gainDB;
 	tsf_voice_calcpitchratio(v, (c->pitchWheel == 8192 ? c->tuning : ((c->pitchWheel / 16383.0f * c->pitchRange * 2.0f) - c->pitchRange + c->tuning)), f->outSampleRate);
 	if      (newpan <= -0.5f) { v->panFactorLeft = 1.0f; v->panFactorRight = 0.0f; }
 	else if (newpan >=  0.5f) { v->panFactorLeft = 0.0f; v->panFactorRight = 1.0f; }
 	else { v->panFactorLeft = TSF_SQRTF(0.5f - newpan); v->panFactorRight = TSF_SQRTF(0.5f + newpan); }
+	v->reverbEffectsSend = reverb;
 }
 
 static struct tsf_channel* tsf_channel_init(tsf* f, int channel)
@@ -1872,6 +2764,7 @@ static struct tsf_channel* tsf_channel_init(tsf* f, int channel)
 		c->gainDB = 0.0f;
 		c->pitchRange = 2.0f;
 		c->tuning = 0.0f;
+		c->reverb = 40;
 	}
 	return &f->channels->channels[channel];
 }
@@ -2012,6 +2905,23 @@ TSFDEF int tsf_channel_set_sustain(tsf* f, int channel, int flag_sustain)
 	return 1;
 }
 
+TSFDEF int tsf_channel_set_reverb_send(tsf* f, int channel, int reverb_send)
+{
+	struct tsf_channel *c = tsf_channel_init(f, channel);
+	if (!c) return 0;
+	if (c->reverb == reverb_send) return 1;
+	c->reverb = (unsigned char)(reverb_send);
+	const float reverbSend = ((float)c->reverb / 127.0);
+	struct tsf_voice *v = f->voices, *vEnd = v ? v + f->voiceNum : TSF_NULL;
+	for (; v != vEnd; v++)
+		if (v->playingPreset != -1 && v->playingChannel == channel)
+		{
+			const float reverb = (v->region->reverb / 1000.0) * reverbSend;
+			v->reverbEffectsSend = reverb;
+		}
+	return 1;
+}
+
 TSFDEF int tsf_channel_note_on(tsf* f, int channel, int key, float vel)
 {
 	if (!f->channels || channel >= f->channels->channelNum) return 1;
@@ -2087,6 +2997,7 @@ TSFDEF int tsf_channel_midi_control(tsf* f, int channel, int controller, int con
 		case  98 /*NRPN_LSB*/        : c->midiRPN = 0xFFFF; return 1;
 		case  99 /*NRPN_MSB*/        : c->midiRPN = 0xFFFF; return 1;
 		case  64 /*SUSTAIN*/         : tsf_channel_set_sustain(f, channel, (int)(control_value >= 64)); return 1;
+		case  91 /*REVERB_SEND*/     : tsf_channel_set_reverb_send(f, channel, control_value); return 1;
 		case 120 /*ALL_SOUND_OFF*/   : tsf_channel_sounds_off_all(f, channel); return 1;
 		case 123 /*ALL_NOTES_OFF*/   : tsf_channel_note_off_all(f, channel);   return 1;
 		case 121 /*ALL_CTRL_OFF*/    :
@@ -2100,6 +3011,7 @@ TSFDEF int tsf_channel_midi_control(tsf* f, int channel, int controller, int con
 			tsf_channel_set_pitchrange(f, channel, 2.0f);
 			tsf_channel_set_tuning(f, channel, 0);
 			tsf_channel_set_pitchwheel(f, channel, 8192);
+			tsf_channel_set_reverb_send(f, channel, 40);
 			return 1;
 	}
 	return 1;
