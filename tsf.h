@@ -3039,7 +3039,6 @@ static void tsf_effects_clear(tsf* f)
 
 static void tsf_effects_process(tsf* f, float* bufferL, float* bufferR, int samples, int channels)
 {
-	int i;
 	if (!f->channels) return;
 	tsf_chorus_process(f->chorus, f->channels->chorusInput, bufferL, bufferR, f->channels->reverbInput, TSF_NULL, samples, channels);
 	tsf_reverb_process(f->reverb, f->channels->reverbInput, bufferL, bufferR, samples, channels);
