@@ -1621,6 +1621,7 @@ static int tsf_reverb_setup(struct tsf_reverb** ee, float sampleRate, int maxBuf
 
 static void tsf_reverb_free(struct tsf_reverb* e)
 {
+	if (!e) return;
 	TSF_FREE(e->delayLeftOutput); e->delayLeftOutput = TSF_NULL;
 	TSF_FREE(e->delayRightOutput); e->delayRightOutput = TSF_NULL;
 	TSF_FREE(e->delayLeftInput); e->delayLeftInput = TSF_NULL;
@@ -2108,6 +2109,7 @@ static int tsf_chorus_copy(struct tsf_chorus** tt, const struct tsf_chorus* s)
 
 static void tsf_chorus_free(struct tsf_chorus* e)
 {
+	if (!e) return;
 	TSF_FREE(e->leftDelayBuffer); e->leftDelayBuffer = TSF_NULL;
 	TSF_FREE(e->rightDelayBuffer); e->rightDelayBuffer = TSF_NULL;
 	TSF_FREE(e);
@@ -2755,8 +2757,8 @@ TSFDEF void tsf_close(tsf* f)
 		TSF_FREE(f->fontSamples);
 		TSF_FREE(f->refCount);
 	}
-	if (f->reverb) { tsf_reverb_free(f->reverb); f->reverb = TSF_NULL; }
-	if (f->chorus) { tsf_chorus_free(f->chorus); f->chorus = TSF_NULL; }
+	tsf_reverb_free(f->reverb);
+	tsf_chorus_free(f->chorus);
 	TSF_FREE(f->channels);
 	TSF_FREE(f->voices);
 	TSF_FREE(f);
