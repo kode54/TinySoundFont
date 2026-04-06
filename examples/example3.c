@@ -8,7 +8,8 @@
 #include "../tml.h"
 
 // Holds the global instance pointer
-static tsf* g_TinySoundFont;
+static tsf* g_TinySoundFontSynth;
+static tsf_soundbank* g_TinySoundFontBank;
 
 // Holds global MIDI playback state
 static double g_Msec;               //current playback time
@@ -29,25 +30,25 @@ static void AudioCallback(ma_device* pDevice, void* pOutput, const void* pInput,
 			switch (g_MidiMessage->type)
 			{
 				case TML_PROGRAM_CHANGE: //channel program (preset) change (special handling for 10th MIDI channel with drums)
-					tsf_channel_set_presetnumber(g_TinySoundFont, g_MidiMessage->channel, g_MidiMessage->program, (g_MidiMessage->channel == 9));
+					tsf_channel_set_presetnumber(g_TinySoundFontSynth, g_MidiMessage->channel, g_MidiMessage->program, (g_MidiMessage->channel == 9));
 					break;
 				case TML_NOTE_ON: //play a note
-					tsf_channel_note_on(g_TinySoundFont, g_MidiMessage->channel, g_MidiMessage->key, g_MidiMessage->velocity / 127.0f);
+					tsf_channel_note_on(g_TinySoundFontSynth, g_MidiMessage->channel, g_MidiMessage->key, g_MidiMessage->velocity / 127.0f);
 					break;
 				case TML_NOTE_OFF: //stop a note
-					tsf_channel_note_off(g_TinySoundFont, g_MidiMessage->channel, g_MidiMessage->key);
+					tsf_channel_note_off(g_TinySoundFontSynth, g_MidiMessage->channel, g_MidiMessage->key);
 					break;
 				case TML_PITCH_BEND: //pitch wheel modification
-					tsf_channel_set_pitchwheel(g_TinySoundFont, g_MidiMessage->channel, g_MidiMessage->pitch_bend);
+					tsf_channel_set_pitchwheel(g_TinySoundFontSynth, g_MidiMessage->channel, g_MidiMessage->pitch_bend);
 					break;
 				case TML_CONTROL_CHANGE: //MIDI controller messages
-					tsf_channel_midi_control(g_TinySoundFont, g_MidiMessage->channel, g_MidiMessage->control, g_MidiMessage->control_value);
+					tsf_channel_midi_control(g_TinySoundFontSynth, g_MidiMessage->channel, g_MidiMessage->control, g_MidiMessage->control_value);
 					break;
 			}
 		}
 
 		// Render the block of audio samples in float format
-		tsf_render_float(g_TinySoundFont, stream, (int)SampleBlock, 0);
+		tsf_render_float(g_TinySoundFontSynth, stream, (int)SampleBlock, 0);
 	}
 }
 
@@ -90,20 +91,31 @@ int main(int argc, char *argv[])
 	g_MidiMessage = TinyMidiLoader;
 
 	// Load the SoundFont from a file
-	g_TinySoundFont = tsf_load_filename(
+	g_TinySoundFontBank = tsf_soundbank_load_filename(
 		(argc >= 3 ? argv[2] : "florestan-subset.sf2")
 	);
-	if (!g_TinySoundFont)
+	if (!g_TinySoundFontBank)
 	{
 		fprintf(stderr, "Could not load SoundFont\n");
 		return 1;
 	}
 
-	//Initialize preset on special 10th MIDI channel to use percussion sound bank (128) if available
-	tsf_channel_set_bank_preset(g_TinySoundFont, 9, 128, 0);
-
 	// Set the SoundFont rendering output mode
-	tsf_set_output(g_TinySoundFont, TSF_STEREO_INTERLEAVED, (int)deviceConfig.sampleRate, -10.0f);
+	g_TinySoundFontSynth = tsf_init(TSF_STEREO_INTERLEAVED, (int)deviceConfig.sampleRate, -10.0f);
+	if (!g_TinySoundFontSynth)
+	{
+		fprintf(stderr, "Could not create the synthesizer\n");
+		return 1;
+	}
+
+	if (!tsf_add_soundbank(g_TinySoundFontSynth, g_TinySoundFontBank))
+	{
+		fprintf(stderr, "Could not add the bank to the synthesizer\n");
+		return 1;
+	}
+
+	//Initialize preset on special 10th MIDI channel to use percussion sound bank (128) if available
+	tsf_channel_set_bank_preset(g_TinySoundFontSynth, 9, 128, 0);
 
 	// Start the actual audio playback here
 	// The audio thread will begin to call our AudioCallback function
@@ -119,7 +131,7 @@ int main(int argc, char *argv[])
 
 	ma_device_uninit(&device);
 
-	// We could call tsf_close(g_TinySoundFont) and tml_free(TinyMidiLoader)
+	// We could call tsf_close(g_TinySoundFontSynth) and tml_free(TinyMidiLoader)
 	// here to free the memory and resources but we just let the OS clean up
 	// because the process ends here.
 	return 0;

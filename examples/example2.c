@@ -5,7 +5,8 @@
 #include "../tsf.h"
 
 // Holds the global instance pointer
-static tsf* g_TinySoundFont;
+static tsf* g_TinySoundFontSynth;
+static tsf_soundbank* g_TinySoundFontBank;
 
 // A Mutex so we don't call note_on/note_off while rendering audio samples
 static ma_mutex g_Mutex;
@@ -15,7 +16,7 @@ static void AudioCallback(ma_device* pDevice, void* pOutput, const void* pInput,
 {
 	// Render the audio samples in float format
 	ma_mutex_lock(&g_Mutex); //get exclusive lock
-	tsf_render_float(g_TinySoundFont, (float*)pOutput, (int)frameCount, 0);
+	tsf_render_float(g_TinySoundFontSynth, (float*)pOutput, (int)frameCount, 0);
 	ma_mutex_unlock(&g_Mutex);
 }
 
@@ -40,15 +41,26 @@ int main(int argc, char *argv[])
 	}
 
 	// Load the SoundFont from a file
-	g_TinySoundFont = tsf_load_filename("florestan-subset.sf2");
-	if (!g_TinySoundFont)
+	g_TinySoundFontBank = tsf_soundbank_load_filename("florestan-subset.sf2");
+	if (!g_TinySoundFontBank)
 	{
 		fprintf(stderr, "Could not load SoundFont\n");
 		return 1;
 	}
 
 	// Set the SoundFont rendering output mode
-	tsf_set_output(g_TinySoundFont, TSF_STEREO_INTERLEAVED, (int)deviceConfig.sampleRate, 0);
+	g_TinySoundFontSynth = tsf_init(TSF_STEREO_INTERLEAVED, (int)deviceConfig.sampleRate, 0);
+	if (!g_TinySoundFontSynth)
+	{
+		fprintf(stderr, "Could not create synthesizer\n");
+		return 1;
+	}
+
+	if (!tsf_add_soundbank(g_TinySoundFontSynth, g_TinySoundFontBank))
+	{
+		fprintf(stderr, "Could not add bank to synthesizer\n");
+		return 1;
+	}
 
 	// Create the mutex
 	ma_mutex_init(&g_Mutex);
@@ -63,20 +75,20 @@ int main(int argc, char *argv[])
 	}
 
 	// Loop through all the presets in the loaded SoundFont
-	for (i = 0; i < tsf_get_presetcount(g_TinySoundFont); i++)
+	for (i = 0; i < tsf_soundbank_get_presetcount(g_TinySoundFontBank); i++)
 	{
 		//Get exclusive mutex lock, end the previous note and play a new note
-		printf("Play note %d with preset #%d '%s'\n", Notes[i % 7], i, tsf_get_presetname(g_TinySoundFont, i));
+		printf("Play note %d with preset #%d '%s'\n", Notes[i % 7], i, tsf_soundbank_get_presetname(g_TinySoundFontBank, i));
 		ma_mutex_lock(&g_Mutex);
-		tsf_note_off(g_TinySoundFont, i - 1, Notes[(i - 1) % 7]);
-		tsf_note_on(g_TinySoundFont, i, Notes[i % 7], 1.0f);
+		tsf_note_off(g_TinySoundFontSynth, g_TinySoundFontBank, i - 1, Notes[(i - 1) % 7]);
+		tsf_note_on(g_TinySoundFontSynth, g_TinySoundFontBank, i, Notes[i % 7], 1.0f);
 		ma_mutex_unlock(&g_Mutex);
 		ma_sleep(1000);
 	}
 
 	ma_device_uninit(&device);
 
-	// We could call tsf_close(g_TinySoundFont) and ma_mutex_uninit(&g_Mutex)
+	// We could call tsf_close(g_TinySoundFontSynth) and ma_mutex_uninit(&g_Mutex)
 	// here to free the memory and resources but we just let the OS clean up
 	// because the process ends here.
 	return 0;

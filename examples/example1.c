@@ -21,7 +21,8 @@ const static unsigned char MinimalSoundFont[] =
 };
 
 // Holds the global instance pointer
-static tsf* g_TinySoundFont;
+static tsf* g_TinySoundFontSynth;
+static tsf_soundbank* g_TinySoundFontBank;
 
 // Callback function called by the audio thread
 static void AudioCallback(ma_device* pDevice, void* pOutput, const void* pInput, ma_uint32 frameCount)
@@ -30,7 +31,7 @@ static void AudioCallback(ma_device* pDevice, void* pOutput, const void* pInput,
 	// example all notes are started before the audio playback begins.
 	// If you do play notes while the audio thread renders output you
 	// will need a mutex of some sort.
-	tsf_render_short(g_TinySoundFont, (short*)pOutput, (int)frameCount, 0);
+	tsf_render_short(g_TinySoundFontSynth, (short*)pOutput, (int)frameCount, 0);
 }
 
 int main(int argc, char *argv[])
@@ -52,19 +53,30 @@ int main(int argc, char *argv[])
 	}
 
 	// Load the SoundFont from the memory block
-	g_TinySoundFont = tsf_load_memory(MinimalSoundFont, sizeof(MinimalSoundFont));
-	if (!g_TinySoundFont)
+	g_TinySoundFontBank = tsf_soundbank_load_memory(MinimalSoundFont, sizeof(MinimalSoundFont));
+	if (!g_TinySoundFontBank)
 	{
 		fprintf(stderr, "Could not load SoundFont\n");
 		return 1;
 	}
 
 	// Set the rendering output mode to 44.1khz and -10 decibel gain
-	tsf_set_output(g_TinySoundFont, TSF_STEREO_INTERLEAVED, (int)deviceConfig.sampleRate, -10);
+	g_TinySoundFontSynth = tsf_init(TSF_STEREO_INTERLEAVED, (int)deviceConfig.sampleRate, -10);
+	if (!g_TinySoundFontSynth)
+	{
+		fprintf(stderr, "Could not create synthesizer\n");
+		return 1;
+	}
+
+	if (!tsf_add_soundbank(g_TinySoundFontSynth, g_TinySoundFontBank))
+	{
+		fprintf(stderr, "Could not add bank to synthesizer\n");
+		return 1;
+	}
 
 	// Start two notes before starting the audio playback
-	tsf_note_on(g_TinySoundFont, 0, 48, 1.0f); //C2
-	tsf_note_on(g_TinySoundFont, 0, 52, 1.0f); //E2
+	tsf_note_on(g_TinySoundFontSynth, g_TinySoundFontBank, 0, 48, 1.0f); //C2
+	tsf_note_on(g_TinySoundFontSynth, g_TinySoundFontBank, 0, 52, 1.0f); //E2
 
 	// Start the actual audio playback here
 	// The audio thread will begin to call our AudioCallback function
@@ -80,7 +92,7 @@ int main(int argc, char *argv[])
 
 	ma_device_uninit(&device);
 
-	// We could call tsf_close(g_TinySoundFont)
+	// We could call tsf_close(g_TinySoundFontSynth) and tsf_soundbank_close(g_TinySoundFontBank)
 	// here to free the memory and resources but we just let the OS clean up
 	// because the process ends here.
 	return 0;
