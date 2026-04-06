@@ -364,6 +364,9 @@ struct tsf
 	struct tsf_reverb* reverb;
 	struct tsf_chorus* chorus;
 
+	float reverbInput[TSF_RENDER_GLOBALEFFECTSAMPLEBLOCK];
+	float chorusInput[TSF_RENDER_GLOBALEFFECTSAMPLEBLOCK];
+
 	int presetNum;
 	int voiceNum;
 	int maxVoiceNum;
@@ -516,8 +519,6 @@ struct tsf_channels
 {
 	void (*setupVoice)(tsf* f, struct tsf_voice* voice);
 	int channelNum, activeChannel;
-	float reverbInput[TSF_RENDER_GLOBALEFFECTSAMPLEBLOCK];
-	float chorusInput[TSF_RENDER_GLOBALEFFECTSAMPLEBLOCK];
 	struct tsf_channel channels[1];
 };
 
@@ -2465,8 +2466,8 @@ static void tsf_voice_render_separate(tsf* f, struct tsf_voice* v, float* output
 	TSF_BOOL dynamicGain = (region->modLfoToVolume != 0);
 	float noteGain = 0, tmpModLfoToVolume;
 
-	float *reverbInput = f->channels->reverbInput;
-	float *chorusInput = f->channels->chorusInput;
+	float *reverbInput = f->reverbInput;
+	float *chorusInput = f->chorusInput;
 
 	if (dynamicLowpass)
 	{
@@ -3029,8 +3030,8 @@ static void tsf_effects_clear(tsf* f)
 {
 	if (f && f->channels)
 	{
-		TSF_MEMSET(f->channels->reverbInput, 0, sizeof(f->channels->reverbInput));
-		TSF_MEMSET(f->channels->chorusInput, 0, sizeof(f->channels->chorusInput));
+		TSF_MEMSET(f->reverbInput, 0, sizeof(f->reverbInput));
+		TSF_MEMSET(f->chorusInput, 0, sizeof(f->chorusInput));
 	}
 }
 
